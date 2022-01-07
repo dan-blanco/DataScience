@@ -1,0 +1,142 @@
+---
+title: "kickstarter.sub"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(comment = NA)
+```
+
+#Libraries 
+```{r message=FALSE, warning=FALSE, results='hide'}
+library(caret)
+library(pROC)
+library(MASS)
+library(arm)
+library(dplyr)
+## This is a push
+## This is a push hi
+## One more test
+```
+
+# Read data
+```{r}
+kickstarter_min <- readRDS("kickstarter-processed-data-5yrs.rds")
+
+str(kickstarter_min)
+```
+
+# Split into train and test 
+```{r}
+set.seed(456) 
+SplitIndex <- sample(x = c("Train", "Test"), replace = T, prob = c(0.7,0.3), 
+                     size = nrow(kickstarter_min))
+
+#Subset data into a train and test set based on the SplitIndex vector
+traindata <- kickstarter_min[SplitIndex == "Train", ]
+testdata <- kickstarter_min[SplitIndex == "Test", ]
+```
+
+# Correlation 
+Only numeric features can be placed in correlation plot. Only correlation is between backers count and pledged. More backers, more money!
+
+```{r}
+library(corrplot)
+library(RColorBrewer)
+M <-cor(kickstarter_min[c("backers_count",
+                          "number_of_days","blurb_length",
+                          "name_length","pledged","goal_ratio","goal")])
+corrplot(M, type="upper", order="hclust",
+         col=brewer.pal(n=8, name="RdYlBu"))
+```
+
+
+
+# Modeling
+
+## Regression baseline model 
+
+Here we will build a model that can predict the amount pledged. 
+
+```{r}
+glm_baseline <- glm(pledged ~ backers_count + 
+                      cat_parent + country +month + 
+                      goal + staff_pick  + number_of_days +
+                      blurb_length + name_length , data = traindata)
+```
+
+## RMSE
+```{r}
+postResample(glm_baseline$fitted.values, glm_baseline$data$pledged)
+```
+
+
+## Plot Residual and QQ
+Residual plot looks strange. We will need to investigate this.
+
+```{r}
+plot(glm_baseline)
+```
+
+# Binominal (logit) baseline model 
+This model will predict whether a model will succeed or fail.
+
+```{r}
+binominal_baseline <- glm(target ~ backers_count +
+                            cat_parent + country +
+                            month + goal + staff_pick  +
+                            number_of_days + blurb_length +
+                            name_length , data = traindata, family = binomial)
+```
+
+# Evaluate binominal model 
+
+## Confusion matrix 
+
+Not bad, model accuracy is above 92%.
+```{r}
+confusionStats_df <- function(df,target){ # is as.character needed?
+  cm <- confusionMatrix(table(Actual = df[[target]],Predicted = df$ClassPredict))
+  return(data.frame(cbind(t(cm$overall),t(cm$byClass))))
+}
+
+predictLog <- function(df,log, thresh=0.5, t=T, f=F){
+    
+  p           <- predict(object = log, newdata = df,
+                            type = "response",se.fit=T)
+  df$fit      <- p$fit
+  df$se.fit   <- p$se.fit
+  df$logits   <- predict(object = log, newdata = df)
+  df$ClassPredict <- ifelse(df$fit > thresh, t, f)
+  return(df)
+}
+
+results <- predictLog(testdata, binominal_baseline, t="successful", f="failed")
+
+results$ClassPredict <- as.factor(results$ClassPredict)
+
+confusionStats_df(results,"target")[c("Accuracy","Sensitivity","Specificity","Precision")]
+
+```
+
+## ROC 
+```{r}
+plot.roc(results$target,results$fit)
+```
+
+```{r warning=FALSE}
+roc(results$target,results$fit)$auc
+```
+
+## Residual Plot
+The residual plot needs to be investigated
+```{r}
+binnedplot(results$fit, as.numeric(results$target) - as.numeric(results$ClassPredict))
+```
+
+
+
+# Conclusion
+Before testing the model on test data, the issues witht the residual plots need to be investigated.
+

@@ -1,0 +1,80 @@
+---
+title: 'Extract, Transform & Load' 
+subtitle: 'Kickstarter Data'
+output: pdf_document
+geometry: margin= 0.5in
+author: "Benedicte Kjaerran, Daniel Blanco, Georgia Barry"
+---
+
+```{r setup, eval=FALSE}
+library(esquisse)
+library(remedy)
+library(dplyr)
+library(lubridate)
+library(rjson)
+library(knitr)
+library(ggplot2)
+library(anytime)
+# this is a comment test I am making changes 
+```
+
+```{r, eval=FALSE}
+filenames <- list.files("Kickstarter", pattern = "*.csv", full.names = TRUE, all.files = TRUE)
+df <- data.frame()
+for (f in filenames) {
+  print(paste("Merging File : ", f))
+  df <- rbind(df, data.frame(read.csv(f, stringsAsFactors = FALSE)))
+}
+df$target <- df$state
+```
+
+```{r, eval=FALSE}
+df1 <- df %>%
+  rowwise() %>%
+  mutate(launched_at = anytime(launched_at))
+df1 <- df1 %>% filter(launched_at > as.POSIXct("2015-04-01 01:00:00") && 
+                        launched_at < as.POSIXct("2020-04-01 01:00:00"))
+df1[c("launched_at")]
+json <- function(r, str) {
+  df <- tryCatch(
+    {
+      data.frame(fromJSON(r), stringsAsFactors = F)
+    },
+    warning = function(war) {
+      return("undefined")
+    },
+    error = function(err) {
+      return("undefined")
+    },
+    finally = {
+
+    }
+  )
+  if (!is.data.frame(df) || !str %in% colnames(df) || !is.character(df[[str]])) {
+    return("undefined")
+  }
+  return(df[[str]])
+}
+substrRight <- function(x, n) {
+  substr(x, nchar(x) - n + 1, nchar(x))
+}
+```
+
+```{r, eval=FALSE}
+df1 <- df1 %>%
+  rowwise() %>%
+  mutate(
+    cat_parent = json(category, "parent_name"),
+    cat_child = json(category, "name"),
+    city = json(location, "name"),
+    state = substrRight(json(location, "short_name"), 2),
+    deadline = anytime(deadline),
+    state_changed_at = anytime(state_changed_at)
+  )
+head(df1[c("cat_parent", "cat_child", "deadline", "launched_at", "state")])
+```
+
+```{r, eval=FALSE}
+saveRDS(df1, "kickstarter_five.rds")
+write.csv(df1, file = "kicstarter_apr2015_apr2020.csv")
+```

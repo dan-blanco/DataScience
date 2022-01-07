@@ -1,0 +1,592 @@
+---
+title: "Pre-processing & Feature Engineering"
+subtitle: "Kickstarter Data"
+author: "Benedicte Kjaerran, Daniel Blanco, Georgia Barry"
+geometry: margin= 0.75in
+output: pdf_document
+fig_height: 16
+fig_width: 20
+linestretch: 1.25
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+# Libraries
+
+```{r  message=FALSE, warning=FALSE, results='hide'}
+library(dplyr)
+library(tidyr)
+library(data.table)
+library(ggplot2)
+options(scipen = 999) # turn off scientific notation for pledge
+library(e1071)
+library(knitr)
+```
+
+
+# Read Data
+
+Data read from csv file to include headers and define NA's.
+
+```{r READ THE DATA}
+kickstarter <- read.csv(
+  file = "/home/rstudio/Statistical Learning/ASSIGNMENT/kicstarter_apr2015_apr2020.csv",
+  header = TRUE, stringsAsFactors = FALSE,
+  na.strings = c("undefined", "null")
+)
+```
+
+# Inspect the Data
+
+## How many rows?
+
+```{r NUMBER OF ROWS IN ORIGINAL DATA SET}
+nrow(kickstarter)
+```
+
+## How many NA's?
+
+```{r SUM OF NAs}
+sum(is.na(kickstarter))
+```
+
+Less than 10% of the data is NA so will be removed.
+
+```{r REMOVE NAs}
+kickstarter <- drop_na(kickstarter) # Removed NA
+```
+
+## Are there any duplicate rows?
+
+Data appears to have 0 duplicates.
+
+```{r DUPLICATES}
+sum(duplicated(kickstarter))
+```
+
+
+## Quick look at the data 
+
+```{r PREVIEW OF ORIGNINAL DATA}
+str(kickstarter)
+```
+
+```{r}
+names(kickstarter)
+```
+
+Dataset contains a lot of unnecessary variables that will not be needed for this analyis.
+
+# Select Desired Features
+
+The following variables were selected for feature engineering and analysis. 
+
+```{r SELECT VARIABLES FROM ORIGINAL DATASET}
+kickstarter.sel <- kickstarter[c("backers_count","blurb","country",
+                                 "country_displayable_name","id","deadline",
+                                 "goal","launched_at","name","staff_pick","usd_pledged",
+                                 "target","cat_parent","cat_child","city",
+                                 "static_usd_rate","currency")]
+
+kable(names(kickstarter.sel), "latex")
+
+```
+
+After selecting these variables, 23,785 duplicates appeared and consquently removed.
+
+```{r REMOVE ADDED DUPLICATES}
+sum(duplicated(kickstarter.sel$id))
+
+kickstarter.sel <- kickstarter.sel[!duplicated(kickstarter.sel), ] # remove duplicates
+sum(duplicated(kickstarter.sel$id))
+
+kickstarter.sel <- kickstarter.sel[!duplicated(kickstarter.sel$id), ] # remove more duplicates
+sum(duplicated(kickstarter.sel$id))
+```
+
+
+# Feature Engineering
+
+We want our model to consider dimensions that the current features can be engineered to support.  
+**Month** - Month campaign was launched  
+**Number of Days** - Number of days the campaign was scheduled for.  
+**Blurb Length** - Number of words in the blurb text of the campaign.  
+**Name Length** - Number of words in the name of the campaign.  
+**Goal** - The goal converted to USD.
+**Pledged** - The amount pledged converted to USD.  
+**Goal Ratio** - The amount divided by the goal amount.
+**Target** - The outcome of the campaign should only include 'successful' and 'failed'.
+
+```{r FEATURE ENGINEERING}
+
+# Finding the number of days and converting blurb and name into blurb and name lengths.
+kickstarter.feat <- kickstarter.sel %>%
+  rowwise() %>%
+  mutate(
+    month = gsub("-", "", substr(launched_at, 6, 8)),
+    number_of_days = as.integer(difftime(as.POSIXct(deadline,
+      format = "%Y-%m-%d %H:%M"
+    ),
+    
+    as.POSIXct(launched_at,
+      format = "%Y-%m-%d %H:%M"
+    ),
+    units = "days"
+    )),
+    
+    blurb_length = lengths(gregexpr("\\W+", blurb)) + 1,
+    name_length = lengths(gregexpr("\\W+", name)) + 1
+  )
+
+# Convert to date
+kickstarter.feat$launched_at <- as.POSIXct(kickstarter.feat$launched_at)
+kickstarter.feat$deadline <- as.POSIXct(kickstarter.feat$deadline)
+
+# Converting month number into month abbreviation
+kickstarter.feat$month <- recode(kickstarter.feat$month,
+  "01" = "Jan",
+  "02" = "Feb",
+  "03" = "Mar",
+  "04" = "Apr",
+  "05" = "May",
+  "06" = "Jun",
+  "07" = "Jul",
+  "08" = "Aug",
+  "09" = "Sep",
+  "10" = "Oct",
+  "11" = "Nov",
+  "12" = "Dec"
+)
+
+# Preview of the new columns
+head(kickstarter.feat[c(
+  "month", "number_of_days",
+  "blurb_length", "name_length",
+  "goal"
+)])
+```
+
+\newpage
+
+```{r}
+str(kickstarter.feat)
+```
+
+\newpage
+
+## Convert Categorical Variables into Factors
+
+```{r CONVERT TO FACTORS}
+# Converting Categories into Factors
+factor_cols <- c(
+  "cat_parent", "cat_child", "city", "month", "target",
+  "staff_pick", "country"
+)
+kickstarter.feat[, factor_cols] <- lapply(kickstarter.feat[, factor_cols], as.factor)
+```
+
+
+## Distribution of Target (outcome) Variable
+
+Target is the outcome of the campaign. Each project was either 'live' (the project was in the midst of its campaign), 'cancelled' (the project was cancelled before the end of the campaign), 'successful' (the project reached or surpassed its goal amount) and, 'failed' (the project did not reach its goal amount).
+
+```{r BAR CHART OF PROJECT STATUS, fig.height = 6, fig.width = 12, fig.align = "center" }
+status.freq <- kickstarter.feat %>%
+  group_by(target) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count))
+
+status.freq$target <- factor(status.freq$target, levels = status.freq$target)
+ggplot(status.freq, aes(target, count, fill = count)) +
+  geom_bar(stat = "identity") +
+  ggtitle("Projects by Status") +
+  xlab("Project Status") +
+  ylab("count") +
+  geom_text(aes(label = count), vjust = -0.5) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face="bold"),
+    axis.title = element_text(size = 11),
+    axis.text.x = element_text(size = 11, angle = 90),
+    legend.position = "null"
+  ) +
+  scale_fill_gradient(low = "lightskyblue", high = "royalblue4")
+```
+
+### Remove 'live' and 'canceled' projects
+
+For the purpose of this analysis, 'live' and 'cancelled' were removed as we are only concerned about if the project was a success or failure. 
+
+```{r REMOVE CANCELLED AND LIVE FROM TARGET}
+kickstarter.feat <- kickstarter.feat[!(kickstarter.feat$target == "live" |
+  kickstarter.feat$target == "canceled"), ]
+kickstarter.feat$target <- factor(kickstarter.feat$target) # remove 0 factor values
+```
+
+
+## Inspect Number of Days
+
+A kickstarter project can run for a maximum of 60 days. There are 46 projects that exceeded 60 days. The reason for this is unclear however, for the purpose of simplicity and cohesion to the Kickstarter rules, all projects that exceed 61 days were removed. One extra day was included to accomodate for time zone errors.
+
+```{r DURATION > 60}
+length(which(kickstarter.feat$number_of_days >= 61))
+```
+
+```{r REMOVE DURATION greater than 61, fig.height = 6, fig.width = 12, fig.align = "center"}
+kickstarter.feat <- kickstarter.feat %>% filter(number_of_days <= 61)
+
+ggplot(kickstarter.feat) +
+  aes(x = number_of_days) +
+  geom_histogram(bins = 30L, fill = "royalblue4") +
+  labs(x = "Project Duration in Days", y = "count") +
+  ggtitle("Project Duration")+
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+```
+
+
+## Convert Foreign Currencies to USD
+
+```{r PREVIEW OF CURRENCY}
+currency_count <- kickstarter %>% 
+  group_by(currency) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count))
+
+kable(currency_count, booktabs = TRUE)
+
+head(kickstarter[c(
+  "pledged", "usd_pledged", "goal", "country", "static_usd_rate"
+)])
+```
+
+
+There are 10 foriegn currencies in this dataset. In order to accurately compare a projects goal and its pledged amount, goal will need to be converted to USD using *the static_usd_variable*. The variable *usd_pledged* has already been converted into USD using the same static_usd_rate.
+
+```{r CONVERT CURRENCY TO USD}
+# Convert goal into USD with static usd rate
+kickstarter.feat$goal <- kickstarter.feat$goal * kickstarter.feat$static_usd_rate
+
+# Change the name of usd_pledged to just pledge
+kickstarter.feat$pledged <- kickstarter.feat$usd_pledged
+
+```
+
+### Remove un-needed variables
+
+After converting foreign currencies into USD, *static_usd_rate* and *currency* are no longer needed and removed from the data. The variable *usd_pledge* was renamed to *pledge* and also removed. 
+
+```{r REMOVE UN-NEEDED VARIABLES}
+kickstarter.feat <- kickstarter.feat[, -which(
+  names(kickstarter.feat) %in% c("static_usd_rate", "usd_pledged", "currency")
+)]
+```
+
+## Distribution of Goal and Pledged
+
+### Goal
+
+There appears to be a lot of project with a goal set to less than 100 dollars and some very unrealistic goals with the highest goal set to over 100 million dollars. Unsurprisingly, low goals became successful, high goals were not reached and failed. 
+
+```{r HISTOGRAM OF GOAL AMOUNT, fig.height = 6, fig.width = 12, fig.align = "center"}
+ggplot(kickstarter.feat) +
+  aes(x = goal) +
+  geom_histogram(bins = 30L, fill = "royalblue4") +
+  labs(x = "Goal Amount (USD)", y = "count") +
+  ggtitle("Project Goal") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.title = element_text(size = 11)
+  )
+
+kable(head(kickstarter.feat[order(kickstarter.feat$goal), c(9, 7, 11)], 15), booktabs = TRUE)
+
+kable(head(kickstarter.feat[order(-kickstarter.feat$goal), c(9, 7, 11)], 15), booktabs = TRUE)
+```
+
+To remove extreme variables, goals set above 1 million and below 1000 dollars were removed 
+
+```{r REMOVE IRRELEVENT and UNREALISTIC GOAL AMOUNTS, fig.height = 6, fig.width = 12, fig.align = "center"}
+
+length(which(kickstarter.feat$goal <= 1000))
+length(which(kickstarter.feat$goal >= 1000000)) #
+
+kickstarter.feat <- kickstarter.feat %>% filter(goal >= 1000 & goal <= 1000000)
+
+ggplot(kickstarter.feat) +
+  aes(x = goal) +
+  geom_histogram(bins = 30L, fill = "royalblue4") +
+  labs(x = "Project Goal (USD)", y = "count") +
+  ggtitle("Project Goal")+
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.title = element_text(size = 11)
+  )
+```
+
+
+### Pledged
+
+Along with the target variable, pleadged is an amount this analysis attempts to predict.
+
+```{r HISTOGRAM PLEDGED AMOUNT, fig.height = 6, fig.width = 12, fig.align = "center"}
+ggplot(kickstarter.feat) +
+  aes(x = pledged) +
+  geom_histogram(bins = 30L, fill = "royalblue4") +
+  labs(x = "log (pledged)", y = "count") +
+  ggtitle("Amount Pledged") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.title = element_text(size = 11)
+  )
+
+
+kable(head(kickstarter.feat[order(-kickstarter.feat$pledged), c(9, 19, 11)], 15), booktabs= TRUE)
+
+kable(head(kickstarter.feat[order(kickstarter.feat$pledged), c(9, 19, 11)], 15), booktabs = TRUE)
+```
+
+
+## Skewness of Goal and Pledge
+
+Goal and pledge are extremely positively skewed.
+
+```{r SKEWNESS OF GOAL AND PLEDGE}
+skewness(kickstarter.feat$goal)
+skewness(kickstarter.feat$pledged)
+```
+
+### Log-transformation to fix skewness
+
+A the log of goal and pledge were added as columns to this dataset to combat skewness.
+
+```{r LOG TRANSFORMATION OF GOAL}
+# Log transformation of goal
+kickstarter.feat$goal_log <- log(1 + (kickstarter.feat$goal))
+kickstarter.feat$pledged_log <- log(1 + (kickstarter.feat$pledged))
+```
+
+```{r HISTOGRAMS of LOG-TRANSFORMATION, fig.height = 6, fig.width = 12, fig.align = "center"}
+
+# Goal
+ggplot(kickstarter.feat) +
+  aes(x = goal_log) +
+  geom_histogram(bins = 30L, fill = "royalblue4") +
+  labs(x = "log ( goal )", y = "count") +
+  ggtitle("Project Goal with Log-Transformation") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+
+# Pledged
+ggplot(kickstarter.feat) +
+  aes(x = pledged_log) +
+  geom_histogram(bins = 30L, fill = "royalblue4") +
+  labs(x = "log ( goal )", y = "Count", title = "Histogram of amount pledged") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+### Goal to Pledge Ratio
+
+```{r, fig.height = 6, fig.width = 12, fig.align = "center"}
+
+kickstarter.feat$goal_ratio <- kickstarter.feat$pledged / kickstarter.feat$goal
+
+ggplot(kickstarter.feat) +
+  aes(x = goal_ratio) +
+  geom_histogram(bins = 30L, fill = "royalblue4") +
+  labs(x = "goal to pledge ratio", y = "count") +
+  ggtitle("Goal Pledge Ratio") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+
+```
+
+
+# Summary of the Data
+
+The data is clean and will be used for the model analyis
+
+```{r FINAL SUMMARY}
+summary(kickstarter.feat)
+```
+
+
+### Save the Data
+
+```{r, eval=FALSE}
+saveRDS(kickstarter.feat, file = "final_clean_kickstarter.rds")
+
+summary(kickstarter.feat[c("target")])
+```
+
+\newpage
+
+# Further Exploratory Analysis
+
+## Outcome of Kickstarter Projects
+
+```{r, fig.height = 6, fig.width = 12, fig.align = "center"}
+status.freq1 <- kickstarter.feat %>%
+  group_by(target) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count))
+
+status.freq1$target <- factor(status.freq1$target, levels = status.freq1$target)
+ggplot(status.freq1, aes(target, count, fill = count)) +
+  geom_bar(stat = "identity") +
+  ggtitle("Projects by Outcome") +
+  xlab("Project Outcome") +
+  ylab("Frequency") +
+  geom_text(aes(label = count), vjust = -0.5) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.title = element_text(size = 11),
+    axis.text.x = element_text(size = 11, angle = 90),
+    legend.position = "null"
+  ) +
+  scale_fill_gradient(low = "lightskyblue", high = "royalblue4")
+```
+
+## Success Rate vs. Project Length
+
+```{r SUCCESS RATE BY PROJECT DURATION, fig.height = 6, fig.width = 12, fig.align = "center" }
+number_of_days_pct <- kickstarter.feat %>%
+  group_by(number_of_days, target) %>%
+  summarise(count = n()) %>%
+  mutate(pct = count / sum(count))
+
+ggplot(
+  number_of_days_pct[number_of_days_pct$target == "successful", ],
+  aes(number_of_days, pct)
+) +
+  geom_point(colour = "royalblue4", size = 2.5) +
+  ggtitle("Success Rate vs. Project Length") +
+  xlab("Project Length (Days)") +
+  ylab("Success Rate (%)") +
+  scale_x_continuous(breaks = c(0, 10, 20, 30, 40, 50, 60)) +
+  geom_vline(xintercept = 30, colour = "red") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.title = element_text(size = 11)
+  )
+```
+
+
+## Total Amount Pledged per Country
+
+```{r TOTAL AMOUNT PLEDGED per COUNTRY, fig.height = 6, fig.width = 12, fig.align = "center" }
+country_pledged_total <- kickstarter.feat %>%
+  group_by(country) %>%
+  summarise(total = sum(pledged)) %>%
+  arrange(desc(total))
+
+country_pledged_total$country <- factor(country_pledged_total$country, levels = country_pledged_total$country)
+
+ggplot(country_pledged_total, aes(country, total / 1000000, fill = total)) +
+  geom_bar(stat = "identity") +
+  ggtitle("Total Amount Pledged by Country") +
+  xlab("Country") +
+  ylab("Amount Pledged (USD millions)") +
+  geom_text(aes(label = paste0("$", round(total / 1000000, 1))), vjust = -1) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.title = element_text(size = 11),
+    axis.text.x = element_text(size = 11, angle = 90),
+    legend.position = "null"
+  ) +
+  scale_fill_gradient(low = "lightskyblue", high = "royalblue4")
+```
+
+
+## Average amount Pledged Per Backer per country
+
+```{r, fig.height = 6, fig.width = 12, fig.align = "center" }
+backer_pledge_average <- kickstarter.feat %>%
+  group_by(country) %>%
+  summarize(pledged = sum(pledged), backers = sum(backers_count)) %>%
+  mutate(average = pledged / backers) %>%
+  arrange(desc(average))
+
+backer_pledge_average$country <- factor(backer_pledge_average$country, levels = backer_pledge_average$country)
+
+ggplot(backer_pledge_average, aes(country, average, fill = average)) +
+  geom_bar(stat = "identity") +
+  ggtitle("Average Amount Pledged per Backer") +
+  xlab("Country") +
+  ylab("Amount Pledged (USD)") +
+  geom_text(aes(label = paste0("$", round(average, 2))), vjust = -0.5) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.title = element_text(size = 11),
+    axis.text.x = element_text(size = 11, angle = 90), legend.position = "null"
+  ) +
+  scale_fill_gradient(low = "lightskyblue", high = "royalblue4")
+```
+
+
+## Total Amount Pledged by Category
+
+```{r, fig.height = 6, fig.width = 12, fig.align = "center" }
+## Average Amount Pledged by Category
+pledged_total <- kickstarter.feat %>%
+  group_by(cat_parent) %>%
+  summarise(total = sum(pledged)) %>%
+  arrange(desc(total))
+
+pledged_total$cat_parent <- factor(pledged_total$cat_parent,
+  levels = pledged_total$cat_parent
+)
+
+ggplot(pledged_total, aes(cat_parent, total / 1000000, fill = total)) +
+  geom_bar(stat = "identity") +
+  ggtitle("Total Amount Pledged by Category") +
+  xlab("Project Category") +
+  ylab("Amount Pledged (USD millions)") +
+  geom_text(aes(label = paste0("$", round(total / 1000000, 1))), vjust = -0.5) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.title = element_text(size = 11),
+    axis.text.x = element_text(size = 11, angle = 90),
+    legend.position = "null"
+  ) +
+  scale_fill_gradient(low = "lightskyblue", high = "royalblue4")
+```
+
+## Average Amount Pledged by Backers per Category
+
+```{r, fig.height = 6, fig.width = 12, fig.align = "center"}
+pledged_average_cat <- kickstarter.feat %>%
+  group_by(cat_parent) %>%
+  summarize(pledged = sum(pledged), backers = sum(backers_count)) %>%
+  mutate(average = pledged / backers) %>%
+  arrange(desc(average))
+
+pledged_average_cat$cat_parent <- factor(pledged_average_cat$cat_parent, levels = pledged_average_cat$cat_parent)
+
+ggplot(pledged_average_cat, aes(cat_parent, average, fill = average)) +
+  geom_bar(stat = "identity") +
+  ggtitle("Average Amount Pledged by Backer per Category") +
+  xlab("Project Category") +
+  ylab("Amount Pledged (USD)") +
+  geom_text(aes(label = paste0("$", round(average, 2))),
+    vjust = -0.5
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"), axis.title = element_text(size = 11),
+    axis.text.x = element_text(size = 11, angle = 90), legend.position = "null"
+  ) +
+  scale_fill_gradient(low = "lightskyblue", high = "royalblue4")
+```

@@ -1,0 +1,187 @@
+---
+title: "final_models"
+author: "Daniel Blanco"
+date: "8/1/2020"
+output: pdf_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Libraries
+```{r}
+library(caret)
+library(kableExtra)
+```
+
+
+# Functions
+
+```{r}
+confusionStats_df <- function(df,target){ # is as.character needed?
+  cm <- confusionMatrix(table(Actual = df[[target]],Predicted = df$ClassPredict))
+  return(data.frame(cbind(t(cm$overall),t(cm$byClass))))
+}
+
+predictLog <- function(df,log, thresh=0.5, t=T, f=F){
+    
+  p           <- predict(object = log, newdata = df,
+                            type = "response",se.fit=T)
+  df$fit      <- p$fit
+  df$se.fit   <- p$se.fit
+  df$logits   <- predict(object = log, newdata = df)
+  df$ClassPredict <- ifelse(df$fit > thresh, t, f)
+  return(df)
+}
+```
+
+
+# Read Data
+
+```{r}
+kickstarter <- readRDS("final_clean_kickstarter.rds")
+ 
+kickstarter$cat_child <- NULL
+kickstarter$city <- NULL
+kickstarter$blurb <- NULL
+kickstarter$country_displayable_name <- NULL 
+kickstarter$name <- NULL
+kickstarter$deadline<-NULL 
+kickstarter$launched_at<-NULL
+
+cntnt_Europe = c("DK","AT", "BE", "CH","DE","ES", "FR", "GB","IE", "IT","LU", "NL","NO","SE")
+cntnt_Asia = c("HK","JP","SG")
+cntnt_NA = c("US","CA")
+cntnt_SA = c("MX")
+cntnt_Pacific = c("NZ","NZ")
+#cntnt_NAmer =
+
+eurpn <- kickstarter$country %in% cntnt_Europe
+asian <- kickstarter$country %in% cntnt_Asia  
+na <- kickstarter$country %in% cntnt_NA
+sa <- kickstarter$country %in% cntnt_SA
+pacific <- kickstarter$country %in% cntnt_Pacific
+
+kickstarter$continent = "ph"
+kickstarter$continent <- kickstarter$continent[eurpn] <- "Europe"
+kickstarter$continent[asian] <- "Asia"
+kickstarter$continent[na] <- "NorthAmerica"
+kickstarter$continent[sa] <- "SouthAmerica"
+kickstarter$continent[pacific] <- "Pacific"
+
+kickstarter$continent <- as.factor(kickstarter$continent) 
+kickstarter$backers_count_log <- log(kickstarter$backers_count+1)
+kickstarter$backers_count <- NULL
+kickstarter$country <- NULL
+```
+
+
+
+# GLM Inverse Gaussian
+WHen trying out the commented code for goal_ratio this is the error **Error: inner loop 1; cannot correct step size**
+
+**Any Link Function outside of Log gives an error for starting values. These are difficult to find, its an area for future research.**
+
+There was a model with a better residual plot, however it had over 20 features. This is a much simpler model with much less variance. The decision was made to use this model because it has less variance. Taking features away did increase the bias of the model, hence the bias variance trade off.
+
+```{r}
+IG_data <- kickstarter
+IG_data$pledged <- NULL
+IG_data$goal <- NULL
+IG_data$pledged_log <-NULL
+IG_data$id <- NULL
+IG_data$target <- NULL
+#IG_data$goal_ratio[IG_data$goal_ratio==0] <- min(IG_data$goal_ratio[IG_data$goal_ratio>0]) *0.9
+IG_data$goal_ratio <- IG_data$goal_ratio +1
+min(IG_data$goal_ratio)
+```
+
+```{r}
+IG<-glm(goal_ratio ~ + cat_parent+month+number_of_days+
+     backers_count_log+continent+(staff_pick) * (goal_log),family=inverse.gaussian(link=log),IG_data)
+```
+
+```{r}
+plot(IG$linear.predictors,residuals(IG,type="deviance"),pch=16)
+```
+
+# Binomial Model
+
+```{r}
+bi_data <- kickstarter
+bi_data$pledged <- NULL
+bi_data$goal <- NULL
+bi_data$pledged_log <-NULL
+bi_data$id <- NULL
+bi_data$goal_ratio <- NULL
+```
+
+```{r}
+binominal_baseline <- glm(target ~., data = bi_data, family = binomial)
+binominal_baseline <-step(binominal_baseline,trace=FALSE)
+```
+
+## Confusion Table
+
+```{r}
+results <- predictLog(bi_data, binominal_baseline, t="successful", f="failed")
+
+results$ClassPredict <- as.factor(results$ClassPredict)
+
+confusionStats_df(results,"target")[c("Accuracy","Sensitivity","Specificity","Precision")]
+
+kable(confusionStats_df(results,"target")[c("Accuracy","Sensitivity","Specificity","Precision")]* 100, digits = 2, caption = "Model performance in percentage", booktabs = TRUE) %>%
+  kable_styling(font_size = 10, full_width = F)%>%
+  kable_styling(bootstrap_options = c("striped", "scale_down", "hover", "condensed")) 
+
+```
+
+## ROC 
+```{r warning=FALSE}
+plot.roc(results$target,results$fit, col = "royalblue4", backgroundcol = "lightskyblue",
+         main = "Binominal baseline model", print.auc = TRUE)
+```
+
+## Binned Residuals
+
+```{r}
+binnedplot(results$fit, as.numeric(results$target) - as.numeric(results$ClassPredict), col.pts = "royalblue4", col.int = "lightskyblue")
+```
+
+```{r}
+nrow(results)
+```
+
+```{r}
+length(results$fit[results$fit>0.65 | results$fit<0.35 ])
+```
+
+
+
+
+#Conclusion
+
+We could have performed regularization with the different distributions.
+
+Our binomial model is great at discrimination. The residual plot makes it appear not calibrated, which is true. Howevever, most predictions (109682 / 114432) are greater then 65% or less then 35%.
+
+In the models using the best subset with all interactions with BIC produced a lot of coefficients. We tried reducing the coefficients by examing the deviances, and removing interactions that were believed to not be significant or causing too many coefficients. The reduction in features will create less variability, meaning the confidence intervals are more reliable and predictions are more precise. Nonetheless, removing important coefficients did increase the bias of the model. 
+
+The models include backers count. It is true that this would not be known, but the models included it so that individuals starting a kickstarter campaign would need to know how many backers they would need. 
+
+Areas of future research would include predicting the number of backers. 
+
+
+
+
+
+
+
+
+
+
+
+
+
