@@ -31,8 +31,6 @@ df$target <- df$state
 
 
 ```{r, eval=FALSE}
-# Some of the data coloumns are JSON. 
-# Code below extracts the JSON values, and appends them as new columns.
 
 df1 <- df %>%
   rowwise() %>%
@@ -66,6 +64,9 @@ substrRight <- function(x, n) {
 ```
 
 ```{r, eval=FALSE}
+# Some of the data coloumns are JSON. 
+# Code below extracts the JSON values, and appends them as new columns.
+
 df1 <- df1 %>%
   rowwise() %>%
   mutate(
