@@ -15,7 +15,7 @@ library(rjson)
 library(knitr)
 library(ggplot2)
 library(anytime)
-# this is a comment test I am making changes 
+
 ```
 
 ```{r, eval=FALSE}
@@ -28,7 +28,12 @@ for (f in filenames) {
 df$target <- df$state
 ```
 
+
+
 ```{r, eval=FALSE}
+# Some of the data coloumns are JSON. 
+# Code below extracts the JSON values, and appends them as new columns.
+
 df1 <- df %>%
   rowwise() %>%
   mutate(launched_at = anytime(launched_at))
